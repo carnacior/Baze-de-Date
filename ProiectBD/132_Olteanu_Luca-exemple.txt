@@ -1,0 +1,163 @@
+--12
+--cereri
+
+--Cererea 1
+--a) subcereri sincronizate in care intervin cel putin 3 tabele
+--Elemente SQL: subcerere sincronizata in SELECT (SUM), subcerere sincronizata EXISTS in WHERE,
+--               tabele implicate: CLIENT, REZERVARE, PACHET_TURISTIC, PLATA
+
+--Listez clientii (nume, prenume) care au facut rezervari pentru pachete turistice disponibile (disponibil = 'D') si care au plati efectuate cu cardul + suma totala platita de fiecare client.
+
+SELECT DISTINCT c.nume, c.prenume, 
+       (SELECT SUM(p.suma) 
+        FROM PLATA p 
+        WHERE p.cod_rezervare = r.cod_rezervare) AS total_plata
+FROM CLIENT c, REZERVARE r, PACHET_TURISTIC pt
+WHERE c.cod_client = r.cod_client AND r.cod_pachet = pt.cod_pachet AND pt.disponibil = 'D' AND EXISTS 
+(
+SELECT 1 
+FROM PLATA p2 
+WHERE p2.cod_rezervare = r.cod_rezervare 
+AND p2.mod_plata = 'card'
+);
+
+
+--Cererea 2
+--b) subcereri nesincronizate in clauza FROM
+--Elemente SQL: subcerere nesincronizata in FROM (tabel derivat), JOIN, GROUP BY
+
+--Pentru fiecare agent de vanzari, afisam numele, prenumele si valoarea totala a rezervarilor confirmate.
+
+
+SELECT av.cod_angajat, a.nume, a.prenume, total_rezervari.valoare_totala
+FROM AGENT_VANZARI av
+JOIN ANGAJAT a ON av.cod_angajat = a.cod_angajat
+JOIN (
+        SELECT r.cod_agent, SUM(pt.pret) AS valoare_totala
+        FROM REZERVARE r
+        JOIN PACHET_TURISTIC pt ON r.cod_pachet = pt.cod_pachet
+        WHERE r.status = 'confirmata'
+        GROUP BY r.cod_agent
+      ) total_rezervari ON av.cod_angajat = total_rezervari.cod_agent;
+      
+--Cererea 3
+--c) grupari de date, functii grup, filtrare la nivel de grupuri cu subcereri nesincronizate (in HAVING) in care intervin cel putin 3 tabele
+--Elemente SQL: GROUP BY, COUNT(DISTINCT), functii grup COUNT, AVG, subcereri sincronizate si nesincronizate in HAVING, tabele: LOCATIE, INCLUDERE_EXCURSIE_LOCATIE, REZERVARE
+
+--Gasim destinatiile (nume locatie) care au fost incluse in cel putin 2 excursii diferite si pentru care 
+--numarul total de rezervari ale excursiilor respective depaseste media generala a rezervarilor pe locatie.
+
+--am adaugat locatia Bucuresti la 3 excursii(presupunem ca se pleaca de acolo si se pune si ea ca locatie) ca sa avem un rezultat la cerere
+INSERT INTO INCLUDERE_EXCURSIE_LOCATIE VALUES (1, 6);
+INSERT INTO INCLUDERE_EXCURSIE_LOCATIE VALUES (2, 6); 
+INSERT INTO INCLUDERE_EXCURSIE_LOCATIE VALUES (7, 6); 
+
+
+
+
+SELECT l.nume, COUNT(DISTINCT ie.cod_pachet) AS nr_excursii,
+       (SELECT COUNT(*) FROM REZERVARE r WHERE r.cod_pachet IN 
+            (SELECT ie2.cod_pachet FROM INCLUDERE_EXCURSIE_LOCATIE ie2 WHERE ie2.cod_locatie = l.cod_locatie)) AS total_rezervari
+FROM LOCATIE l
+JOIN INCLUDERE_EXCURSIE_LOCATIE ie ON l.cod_locatie = ie.cod_locatie GROUP BY l.cod_locatie, l.nume
+HAVING COUNT(DISTINCT ie.cod_pachet) >= 2
+    AND (SELECT COUNT(*) FROM REZERVARE r WHERE r.cod_pachet IN 
+        (SELECT ie2.cod_pachet FROM INCLUDERE_EXCURSIE_LOCATIE ie2 WHERE ie2.cod_locatie = l.cod_locatie))
+        >
+        (SELECT AVG(total) FROM (SELECT COUNT(*) AS total FROM REZERVARE r2 GROUP BY r2.cod_pachet));
+        
+--Cererea 4
+--d) ordonari si utilizarea functiilor NVL si DECODE (in cadrul aceleiasi cereri)
+--Elemente SQL: ORDER BY, NVL, DECODE(TRUNC())
+
+--Listam toate platile (cod_plata, suma, mod_plata), afisand in loc de NULL la mod_plata textul 'necunoscut', 
+--iar pentru suma afisam o categorie (MICA, MEDIE, MARE) folosind DECODE. Ordonate descrescator dupa suma.
+
+
+SELECT cod_plata, suma, NVL(mod_plata, 'necunoscut') AS mod_plata_corect,
+DECODE(TRUNC(suma/100), 0, 'MICA', 1, 'MICA', 2, 'MEDIE', 3, 'MEDIE', 4, 'MARE', 'MARE') AS categorie_suma
+FROM PLATA
+ORDER BY suma DESC;
+
+--Cererea 5
+--e) utilizarea a cel putin 2 functii pe siruri de caractere, 2 functii pe date calendaristice, a cel putin unei expresii CASE
+--f) utilizarea a cel putin 1 bloc de cerere (clauza WITH)
+--Elemente SQL: WITH (), SUBSTR, LENGTH, TO_CHAR, TRUNC(SYSDATE - data_inregistrare), CASE
+
+--Pentru fiecare client, afisami primele 3 litere din nume si lungimea prenumelui, data inregistrarii sub forma 'DD-MM-YYYY', 
+--precum si un calcul al vechimii in zile. Adaugam o coloana care sa clasifice clientul (VECHI, NOU) folosind CASE. 
+--Folosim WITH pentru a ne defini tabelul cu vechimea clientului pentru JOIN mai incolo.
+
+
+WITH vechime_client AS 
+(
+    SELECT cod_client, 
+    TRUNC(SYSDATE - data_inregistrare) AS zile_vechime
+    FROM CLIENT
+)
+SELECT c.cod_client,
+       SUBSTR(c.nume, 1, 3) AS prefix_nume,
+       LENGTH(c.prenume) AS lungime_prenume,
+       TO_CHAR(c.data_inregistrare, 'DD-MM-YYYY') AS data_inreg_format,
+       vc.zile_vechime,
+       CASE WHEN vc.zile_vechime > 365 THEN 'VECHI' ELSE 'NOU' END AS tip_client
+FROM CLIENT c
+JOIN vechime_client vc ON c.cod_client = vc.cod_client;
+
+
+--13
+--Operatii UPDATE si DELETE cu subcereri
+
+-- UPDATE cu subcerere (sincronizata): crestem comisionul agentilor care au rezervari finalizate cu pachete peste 1000 lei
+UPDATE AGENT_VANZARI av
+SET av.comision = av.comision + 2
+WHERE av.cod_angajat IN (
+    SELECT DISTINCT r.cod_agent
+    FROM REZERVARE r
+    JOIN PACHET_TURISTIC pt ON r.cod_pachet = pt.cod_pachet
+    WHERE pt.pret > 1000 AND r.status = 'finalizata'
+);
+
+-- Stergem locatiile care nu sunt folosite in nicio asociere cu excursii sau sejururi
+-- (inseram o locatie doar pentru a arata ca functioneaza cererea)
+INSERT INTO LOCATIE VALUES (seq_locatie.NEXTVAL, 'Ploiesti', 'Romania', 'oras');
+
+-- DELETE cu subcerere (NOT IN): sterge locatiile nefolosite nici in excursii nici in sejururi
+DELETE FROM LOCATIE l
+WHERE l.cod_locatie NOT IN (SELECT DISTINCT cod_locatie FROM INCLUDERE_EXCURSIE_LOCATIE)
+  AND l.cod_locatie NOT IN (SELECT DISTINCT cod_locatie FROM SEJUR);
+
+-- DELETE cu subcerere (NOT EXISTS): sterge rezervarile care nu au nicio plata
+DELETE FROM REZERVARE r
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM PLATA p
+    WHERE p.cod_rezervare = r.cod_rezervare
+);
+  
+
+--14
+--Vizualizare complexa si operatii LMD permise/nepermise
+
+--Sa aratam pentru fiecare client numele, prenumele, numarul total de rezervari facute, 
+--suma totala platita (din toate platile aferente rezervarilor) si valoarea medie a platilor.
+
+--Elemente SQL:VIEW, COUNT, NVL, SUM, ROUND, AVG, LEFT JOIN, GROUP BY
+
+CREATE OR REPLACE VIEW raport_clienti AS
+SELECT c.cod_client,
+       c.nume,
+       c.prenume,
+       COUNT(DISTINCT r.cod_rezervare) AS nr_rezervari,
+       NVL(SUM(p.suma), 0) AS total_platit,
+       NVL(ROUND(AVG(p.suma), 2), 0) AS media_plata
+FROM CLIENT c
+LEFT JOIN REZERVARE r ON c.cod_client = r.cod_client
+LEFT JOIN PLATA p ON r.cod_rezervare = p.cod_rezervare
+GROUP BY c.cod_client, c.nume, c.prenume;
+
+--functie lmd permisa(doar SELECT pentru ca este complexa)
+SELECT * FROM raport_clienti WHERE nr_rezervari > 0;
+
+--functie nepermisa(UPDATE sau DELET sau INSERT)
+UPDATE raport_clienti SET total_platit = 2000 WHERE cod_client = 1;
